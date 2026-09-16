@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("⚡ Peta Interaktif Sebaran PJU Refurbished")
-st.markdown("Visualisasi 40 Titik PJU Refurbished dari total 752 PJU Tol Jombang-Mojokerto.")
+st.markdown("Visualisasi Titik PJU Refurbished Tol Jombang-Mojokerto.")
 
 EXCEL_FILE = 'Dokumentasi Penggantian PJU Tol JOMO 2025-2026 (40 Unit) - Final.xlsx'
 
@@ -104,7 +104,7 @@ else:
 # ---------------------------------------------------------
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total PJU Refurbished", f"{len(df)} Unit")
-col2.metric("Target Total PJU", "600+ Unit")
+col2.metric("Target Total PJU", "752+ Unit")
 col3.metric("Persentase Refurbished", f"{(len(df)/600)*100:.1f}%")
 col4.metric("Jumlah Area Tercover", f"{df['Lokasi'].nunique()} Area")
 
