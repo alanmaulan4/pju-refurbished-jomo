@@ -2,25 +2,28 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
+import openpyxl
 import re
 import os
+import base64
 
 # ---------------------------------------------------------
 # 1. Konfigurasi Halaman & Styling
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Peta Interaktif PJU Refurbished",
+    page_title="Peta Interaktif PJU Refurbished Tol JOMO",
     page_icon="⚡",
     layout="wide"
 )
 
-st.title("⚡ Peta Interaktif Sebaran PJU Refurbished")
-st.markdown("Visualisasi Titik PJU Refurbished Tol Jombang-Mojokerto.")
+st.title("⚡ Peta Interaktif Sebaran PJU Refurbished - Tol JOMO")
+st.markdown("Visualisasi Titik PJU Refurbished")
 
 EXCEL_FILE = 'Dokumentasi Penggantian PJU Tol JOMO 2025-2026 (40 Unit) - Final.xlsx'
+IMG_DIR = 'extracted_images'
 
 # ---------------------------------------------------------
-# 2. Fungsi Helper & Cleaning Data Koordinat
+# 2. Extract Gambar dari Excel & Cleaning Data
 # ---------------------------------------------------------
 def clean_lat(x):
     s = str(x).strip()
@@ -43,25 +46,51 @@ def clean_lon(x):
     return float(s[:3] + '.' + s[3:])
 
 @st.cache_data
-def load_data():
-    if os.path.exists(EXCEL_FILE):
-        df = pd.read_excel(EXCEL_FILE)
-        df.columns = df.columns.str.strip()
-        df['lat_clean'] = df['Latitude'].apply(clean_lat)
-        df['lon_clean'] = df['Longitude'].apply(clean_lon)
-        return df
-    else:
-        st.error(f"File '{EXCEL_FILE}' tidak ditemukan di folder yang sama!")
-        return pd.DataFrame(columns=['No', 'Lokasi', 'Latitude', 'Longitude', 'lat_clean', 'lon_clean'])
+def extract_images_and_load_data():
+    if not os.path.exists(EXCEL_FILE):
+        st.error(f"File '{EXCEL_FILE}' tidak ditemukan!")
+        return pd.DataFrame()
 
-# Inisialisasi State Session untuk menyimpan data interaktif
+    # Ekstrak data tabel
+    df = pd.read_excel(EXCEL_FILE)
+    df.columns = df.columns.str.strip()
+    df['lat_clean'] = df['Latitude'].apply(clean_lat)
+    df['lon_clean'] = df['Longitude'].apply(clean_lon)
+
+    # Ekstrak gambar dari Excel
+    os.makedirs(IMG_DIR, exist_ok=True)
+    wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
+    sheet = wb.active
+
+    img_map = {}
+    for i, img in enumerate(sheet._images):
+        try:
+            row = img.anchor._from.row + 1  # 1-indexed row di excel
+            img_data = img._data()
+            img_path = os.path.join(IMG_DIR, f"pju_row_{row}.png")
+            
+            with open(img_path, "wb") as f:
+                f.write(img_data)
+
+            # Konversi gambar ke base64 agar mudah ditampilkan di HTML Folium
+            with open(img_path, "rb") as f:
+                b64_str = base64.b64encode(f.read()).decode('utf-8')
+                img_map[row] = f"data:image/png;base64,{b64_str}"
+        except Exception as e:
+            pass
+
+    # Petakan base64 image ke dataframe berdasarkan nomor baris Excel (Header = Baris 2)
+    df['img_base64'] = [img_map.get(idx + 3, None) for idx in df.index]
+    return df
+
+# Load State Data
 if 'pju_df' not in st.session_state:
-    st.session_state.pju_df = load_data()
+    st.session_state.pju_df = extract_images_and_load_data()
 
 df = st.session_state.pju_df
 
 # ---------------------------------------------------------
-# 3. Sidebar: Form Input & Filter
+# 3. Sidebar: Form Input & Filter Area
 # ---------------------------------------------------------
 st.sidebar.header("📍 Tambah Titik PJU Baru")
 with st.sidebar.form("form_add_pju"):
@@ -80,24 +109,19 @@ with st.sidebar.form("form_add_pju"):
                 'Latitude': lat_input,
                 'Longitude': lon_input,
                 'lat_clean': lat_input,
-                'lon_clean': lon_input
+                'lon_clean': lon_input,
+                'img_base64': None
             }])
             st.session_state.pju_df = pd.concat([st.session_state.pju_df, new_row], ignore_index=True)
             st.sidebar.success(f"Berhasil menambahkan PJU #{new_id} ({lokasi_input})!")
             st.rerun()
-        else:
-            st.sidebar.warning("Nama lokasi tidak boleh kosong.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 Filter Area")
 available_locations = ["Semua Lokasi"] + list(df['Lokasi'].dropna().unique())
 selected_loc = st.sidebar.selectbox("Pilih Lokasi:", available_locations)
 
-# Filter Dataframe
-if selected_loc != "Semua Lokasi":
-    filtered_df = df[df['Lokasi'] == selected_loc]
-else:
-    filtered_df = df
+filtered_df = df if selected_loc == "Semua Lokasi" else df[df['Lokasi'] == selected_loc]
 
 # ---------------------------------------------------------
 # 4. Ringkasan KPI Cards
@@ -111,56 +135,38 @@ col4.metric("Jumlah Area Tercover", f"{df['Lokasi'].nunique()} Area")
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 5. Rendering Peta Interaktif (Folium)
+# 5. Rendering Peta Interaktif + Popup Foto
 # ---------------------------------------------------------
-# Tentukan pusat peta
 valid_coords = filtered_df.dropna(subset=['lat_clean', 'lon_clean'])
-if not valid_coords.empty:
-    center_lat = valid_coords['lat_clean'].mean()
-    center_lon = valid_coords['lon_clean'].mean()
-else:
-    center_lat, center_lon = -7.47, 112.30
 
-# Inisialisasi Peta
-m = folium.Map(
-    location=[center_lat, center_lon],
-    zoom_start=12,
-    tiles="OpenStreetMap"
-)
+center_lat = valid_coords['lat_clean'].mean() if not valid_coords.empty else -7.47
+center_lon = valid_coords['lon_clean'].mean() if not valid_coords.empty else 112.30
 
-# Menambahkan Marker ke Peta
+m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+
 for _, row in valid_coords.iterrows():
+    # Cek apakah ada foto
+    if pd.notna(row['img_base64']):
+        img_html = f'<img src="{row["img_base64"]}" style="width:100%; max-height:180px; object-fit:cover; border-radius:5px; margin-top:8px;" />'
+    else:
+        img_html = '<div style="background:#f0f0f0; color:#777; text-align:center; padding:10px; margin-top:8px; border-radius:5px;"><small>Tidak ada foto</small></div>'
+
     popup_content = f"""
-    <div style="font-family: Arial; width: 180px;">
-        <h4 style="margin-bottom:5px; color:#1E88E5;">PJU #{int(row['No'])}</h4>
+    <div style="font-family: Arial, sans-serif; width: 200px;">
+        <h4 style="margin:0 0 5px 0; color:#1E88E5;">PJU #{int(row['No'])}</h4>
         <b>Lokasi:</b> {row['Lokasi']}<br>
         <b>Status:</b> <span style="color:green; font-weight:bold;">Refurbished</span><br>
-        <hr style="margin:5px 0;">
         <small><b>Lat:</b> {row['lat_clean']:.6f}</small><br>
         <small><b>Long:</b> {row['lon_clean']:.6f}</small>
+        {img_html}
     </div>
     """
     
     folium.Marker(
         location=[row['lat_clean'], row['lon_clean']],
-        popup=folium.Popup(popup_content, max_width=250),
+        popup=folium.Popup(popup_content, max_width=240),
         tooltip=f"PJU #{int(row['No'])} - {row['Lokasi']}",
         icon=folium.Icon(color="green", icon="bolt", prefix="fa")
     ).add_to(m)
 
-# Tampilkan peta di Streamlit
-st_folium(m, width="100%", height=550)
-
-# ---------------------------------------------------------
-# 6. Tabel Data & Ekspor
-# ---------------------------------------------------------
-with st.expander("📋 Lihat & Download Data Tabel Koordinat"):
-    st.dataframe(filtered_df[['No', 'Lokasi', 'lat_clean', 'lon_clean']], use_container_width=True)
-    
-    csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Download Data CSV",
-        data=csv_data,
-        file_name="pju_refurbished_jomo.csv",
-        mime="text/csv"
-    )
+st_folium(m, width="100%", height=600)
